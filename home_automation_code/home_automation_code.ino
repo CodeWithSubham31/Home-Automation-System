@@ -3,8 +3,8 @@
 #include<Wire.h>
 #include<DHT.h>
 
-SoftwareSerial gsm(2,3);
-SoftwareSerial bluetooth(4,5);
+SoftwareSerial gsm(2,3);//RX,TX
+SoftwareSerial bluetooth(4,5);//RX,TX
 
 DHT dht(6,DHT11);
 LiquidCrystal_I2C lcd(0x27,16,2);
