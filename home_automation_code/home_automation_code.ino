@@ -7,19 +7,21 @@
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 
+// ---------------- PIN ----------------
 #define DHTPIN D2
 #define DHTTYPE DHT11
 #define FAN_PIN D1
 #define LIGHT_PIN D3
 #define LPG_PIN A0
 
+// ---------------- WIFI ----------------
 const char* ssid = "YOUR_WIFI";
 const char* password = "YOUR_PASSWORD";
 
 ESP8266WebServer server(80);
 DHT dht(DHTPIN, DHTTYPE);
 
-// AUDIO
+// ---------------- AUDIO ----------------
 AudioGeneratorMP3 *mp3;
 AudioFileSourceICYStream *file;
 AudioOutputI2S *out;
@@ -45,23 +47,25 @@ void speak(String text){
   delete out;
 }
 
-// -------- HTML HOME --------
+// ---------------- HOME PAGE ----------------
 String homePage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HAAAS</title>
+
 <style>
-body{margin:0;font-family:Arial;background:white;}
-.navbar{background:yellow;padding:15px;display:flex;justify-content:space-between;font-weight:bold;}
-.container{display:grid;grid-template-columns:repeat(2,1fr);gap:15px;padding:15px;}
-.card{background:#f5f5f5;border-radius:15px;padding:20px;text-align:center;}
-.toggle{cursor:pointer;}
-.active{background:lightgreen !important;}
-.icon{font-size:40px;}
-.value{font-size:20px;font-weight:bold;}
+body { margin:0; font-family:Arial; background:white; }
+.navbar { background:yellow; padding:15px; display:flex; justify-content:space-between; font-weight:bold; }
+.container { display:grid; grid-template-columns:repeat(2,1fr); gap:15px; padding:15px; }
+.card { background:#f5f5f5; border-radius:15px; padding:20px; text-align:center; }
+.toggle { cursor:pointer; }
+.active { background:lightgreen !important; }
+.icon { font-size:40px; }
+.value { font-size:20px; font-weight:bold; }
 </style>
+
 </head>
 
 <body>
@@ -125,35 +129,105 @@ setInterval(updateData,2000);
 </html>
 )rawliteral";
 
-// -------- MIC PAGE --------
+
+// ---------------- MIC PAGE ----------------
 String micPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Voice</title>
+<title>Voice Assistant</title>
+
 <style>
-body{display:flex;justify-content:center;align-items:center;height:100vh;font-family:Arial;}
-.mic{width:140px;height:140px;border-radius:50%;background:black;color:white;font-size:60px;display:flex;align-items:center;justify-content:center;}
+body {
+  margin: 0;
+  background: #ffffff;
+  font-family: Arial;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
+.container { text-align:center; }
+
+.mic-btn {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: black;
+  color: white;
+  font-size: 60px;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  cursor:pointer;
+}
+
+.mic-btn.active {
+  background: red;
+  box-shadow: 0 0 25px red;
+}
+
+.status { margin-top:20px; color:#666; }
+.text { margin-top:15px; }
 </style>
+
 </head>
 
 <body>
 
-<div class="mic" onclick="start()">🎤</div>
+<div class="container">
+<div id="micBtn" class="mic-btn">🎤</div>
+<div id="status" class="status">Tap to speak</div>
+<div id="text" class="text"></div>
+</div>
 
 <script>
-function start(){
+let recognition = null;
+let listening = false;
+
+const micBtn = document.getElementById("micBtn");
+
+micBtn.onclick = toggleMic;
+
+function initRecognition(){
  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+ if(!SpeechRecognition){
+  alert("Not supported");
+  return null;
+ }
+
  let rec = new SpeechRecognition();
- rec.lang="en-US";
+ rec.lang = "en-US";
 
  rec.onresult = function(e){
    let text = e.results[0][0].transcript;
-   fetch('/send?text='+encodeURIComponent(text));
+   document.getElementById("text").innerText = text;
+
+   fetch('/send?text=' + encodeURIComponent(text));
  };
 
- rec.start();
+ return rec;
+}
+
+function toggleMic(){
+ if(!recognition){
+  recognition = initRecognition();
+  if(!recognition) return;
+ }
+
+ if(!listening){
+  recognition.start();
+  listening = true;
+  micBtn.classList.add("active");
+  document.getElementById("status").innerText="Listening...";
+ }else{
+  recognition.stop();
+  listening = false;
+  micBtn.classList.remove("active");
+  document.getElementById("status").innerText="Stopped";
+ }
 }
 </script>
 
@@ -161,7 +235,8 @@ function start(){
 </html>
 )rawliteral";
 
-// -------- ROUTES --------
+
+// ---------------- ROUTES ----------------
 
 void handleRoot(){ server.send(200,"text/html",homePage); }
 void handleMic(){ server.send(200,"text/html",micPage); }
@@ -184,7 +259,7 @@ void handleData(){
  server.send(200,"application/json",json);
 }
 
-// 🔥 VOICE LOGIC + SPEAKER
+// 🔥 VOICE + SPEAKER
 void handleSend(){
  String text = server.arg("text");
  text.toLowerCase();
@@ -192,30 +267,27 @@ void handleSend(){
  float t = dht.readTemperature();
 
  if(text.indexOf("temperature")>=0){
-   String ans = "Temperature is " + String(t) + " degree";
-   speak(ans);
-   server.send(200,"text/plain",ans);
+   speak("Temperature is " + String(t) + " degree");
  }
 
  else if(text.indexOf("fan on")>=0){
    digitalWrite(FAN_PIN,HIGH);
    speak("Fan turned on");
-   server.send(200,"text/plain","Fan ON");
  }
 
  else if(text.indexOf("fan off")>=0){
    digitalWrite(FAN_PIN,LOW);
    speak("Fan turned off");
-   server.send(200,"text/plain","Fan OFF");
  }
 
  else{
    speak("Sorry I am offline");
-   server.send(200,"text/plain","Offline");
  }
+
+ server.send(200,"text/plain","OK");
 }
 
-// -------- SETUP --------
+// ---------------- SETUP ----------------
 
 void setup(){
  Serial.begin(115200);
