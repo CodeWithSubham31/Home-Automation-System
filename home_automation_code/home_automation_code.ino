@@ -136,19 +136,22 @@ String micPage = R"rawliteral(
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Voice Assistant</title>
+<title>AI Assistant</title>
 
 <style>
 body {
   margin: 0;
   background: #ffffff;
-  font-family: Arial;
+  font-family: Arial, sans-serif;
   display: flex;
   justify-content: center;
   align-items: center;
   height: 100vh;
 }
-.container { text-align:center; }
+
+.container {
+  text-align: center;
+}
 
 .mic-btn {
   width: 140px;
@@ -157,10 +160,11 @@ body {
   background: black;
   color: white;
   font-size: 60px;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  cursor:pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: 0.3s;
 }
 
 .mic-btn.active {
@@ -168,8 +172,23 @@ body {
   box-shadow: 0 0 25px red;
 }
 
-.status { margin-top:20px; color:#666; }
-.text { margin-top:15px; }
+.status {
+  margin-top: 20px;
+  font-size: 15px;
+  color: #666;
+}
+
+.text {
+  margin-top: 15px;
+  font-size: 16px;
+  color: #000;
+}
+
+.response {
+  margin-top: 8px;
+  font-size: 15px;
+  color: #007bff;
+}
 </style>
 
 </head>
@@ -177,9 +196,12 @@ body {
 <body>
 
 <div class="container">
-<div id="micBtn" class="mic-btn">🎤</div>
-<div id="status" class="status">Tap to speak</div>
-<div id="text" class="text"></div>
+  <div id="micBtn" class="mic-btn">🎤</div>
+
+  <div id="status" class="status">Tap to speak</div>
+
+  <div id="text" class="text"></div>
+  <div id="res" class="response"></div>
 </div>
 
 <script>
@@ -188,51 +210,88 @@ let listening = false;
 
 const micBtn = document.getElementById("micBtn");
 
-micBtn.onclick = toggleMic;
+micBtn.addEventListener("click", toggleMic);
 
-function initRecognition(){
- const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+function initRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
- if(!SpeechRecognition){
-  alert("Not supported");
-  return null;
- }
+  if (!SpeechRecognition) {
+    alert("Speech Recognition not supported");
+    return null;
+  }
 
- let rec = new SpeechRecognition();
- rec.lang = "en-US";
+  let rec = new SpeechRecognition();
+  rec.lang = "en-US";
+  rec.interimResults = false;
+  rec.continuous = false;
 
- rec.onresult = function(e){
-   let text = e.results[0][0].transcript;
-   document.getElementById("text").innerText = text;
+  rec.onresult = function(event) {
+    try {
+      let text = event.results[0][0].transcript || "";
+      document.getElementById("text").innerText = text;
 
-   fetch('/send?text=' + encodeURIComponent(text));
- };
+      fetch('/send?text=' + encodeURIComponent(text))
+      .then(res => res.text())
+      .then(data => {
+        document.getElementById("res").innerText = data;
+      })
+      .catch(() => {
+        document.getElementById("res").innerText = "Connection error";
+      });
 
- return rec;
+    } catch (e) {
+      document.getElementById("res").innerText = "Speech error";
+    }
+  };
+
+  // 🔥 AUTO STOP when finished
+  rec.onend = function() {
+    stopMic();
+  };
+
+  rec.onerror = function() {
+    stopMic();
+    document.getElementById("status").innerText = "Mic error";
+  };
+
+  return rec;
 }
 
-function toggleMic(){
- if(!recognition){
-  recognition = initRecognition();
-  if(!recognition) return;
- }
+function toggleMic() {
 
- if(!listening){
-  recognition.start();
-  listening = true;
-  micBtn.classList.add("active");
-  document.getElementById("status").innerText="Listening...";
- }else{
-  recognition.stop();
+  if (!recognition) {
+    recognition = initRecognition();
+    if (!recognition) return;
+  }
+
+  if (!listening) {
+    try {
+      recognition.start();
+      listening = true;
+      micBtn.classList.add("active");
+      document.getElementById("status").innerText = "Listening...";
+    } catch (e) {
+      document.getElementById("status").innerText = "Start error";
+    }
+  } else {
+    stopMic();
+  }
+}
+
+function stopMic() {
+  try {
+    if (recognition) recognition.stop();
+  } catch (e) {}
+
   listening = false;
   micBtn.classList.remove("active");
-  document.getElementById("status").innerText="Stopped";
- }
+  document.getElementById("status").innerText = "Stopped";
 }
 </script>
 
 </body>
 </html>
+
 )rawliteral";
 
 
