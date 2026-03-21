@@ -2,7 +2,7 @@
 #include <ESP8266WebServer.h>
 #include <DHT.h>
 
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
 #include "AudioFileSourceICYStream.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
@@ -22,39 +22,61 @@ ESP8266WebServer server(80);
 DHT dht(DHTPIN, DHTTYPE);
 
 // ---------------- AUDIO ----------------
-AudioGeneratorMP3 *mp3;
-AudioFileSourceICYStream *file;
-AudioOutputI2S *out;
+AudioGeneratorMP3 *mp3 = NULL;
+AudioFileSourceICYStream *file = NULL;
+AudioOutputI2S *out = NULL;
 
-// 🔊 SPEAK FUNCTION
+// ---------------- SAFE SPEAK FUNCTION ----------------
 void speak(String text){
+
+  if(text.length() == 0) return;
+
   text.replace(" ", "%20");
 
-  String url = "https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=" + text;
+  String url = "http://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=" + text;
+
+  // cleanup previous (extra safety)
+  if(mp3){ delete mp3; mp3 = NULL; }
+  if(file){ delete file; file = NULL; }
+  if(out){ delete out; out = NULL; }
 
   file = new AudioFileSourceICYStream(url.c_str());
   out = new AudioOutputI2S();
   mp3 = new AudioGeneratorMP3();
 
-  mp3->begin(file, out);
+  if(mp3 && file && out && mp3->begin(file, out)){
+    unsigned long start = millis();
 
-  while(mp3->isRunning()){
-    mp3->loop();
+    while(mp3->isRunning()){
+      if(!mp3->loop()){
+        mp3->stop();
+        break;
+      }
+
+      yield(); // watchdog safe
+
+      // 🔥 timeout safety (max 10 sec)
+      if(millis() - start > 10000){
+        mp3->stop();
+        break;
+      }
+    }
   }
 
-  delete mp3;
-  delete file;
-  delete out;
+  // cleanup
+  if(mp3){ delete mp3; mp3 = NULL; }
+  if(file){ delete file; file = NULL; }
+  if(out){ delete out; out = NULL; }
 }
 
-// ---------------- HOME PAGE ----------------
+// ---------------- HTML ----------------
+
 String homePage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>HAAAS</title>
-
 <style>
 body { margin:0; font-family:Arial; background:white; }
 .navbar { background:yellow; padding:15px; display:flex; justify-content:space-between; font-weight:bold; }
@@ -65,7 +87,6 @@ body { margin:0; font-family:Arial; background:white; }
 .icon { font-size:40px; }
 .value { font-size:20px; font-weight:bold; }
 </style>
-
 </head>
 
 <body>
@@ -120,7 +141,8 @@ function updateData(){
  .then(d=>{
   document.getElementById("temp").innerText=d.temp+" °C";
   document.getElementById("lpg").innerText=d.lpg;
- });
+ })
+ .catch(()=>{});
 }
 setInterval(updateData,2000);
 </script>
@@ -129,172 +151,56 @@ setInterval(updateData,2000);
 </html>
 )rawliteral";
 
-
 // ---------------- MIC PAGE ----------------
-String micPage = R"rawliteral(
 
+String micPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Assistant</title>
-
 <style>
-body {
-  margin: 0;
-  background: #ffffff;
-  font-family: Arial, sans-serif;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
-}
-
-.container {
-  text-align: center;
-}
-
-.mic-btn {
-  width: 140px;
-  height: 140px;
-  border-radius: 50%;
-  background: black;
-  color: white;
-  font-size: 60px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  cursor: pointer;
-  transition: 0.3s;
-}
-
-.mic-btn.active {
-  background: red;
-  box-shadow: 0 0 25px red;
-}
-
-.status {
-  margin-top: 20px;
-  font-size: 15px;
-  color: #666;
-}
-
-.text {
-  margin-top: 15px;
-  font-size: 16px;
-  color: #000;
-}
-
-.response {
-  margin-top: 8px;
-  font-size: 15px;
-  color: #007bff;
-}
+body { margin:0; background:white; display:flex; justify-content:center; align-items:center; height:100vh; font-family:Arial;}
+.mic { width:140px;height:140px;border-radius:50%;background:black;color:white;font-size:60px;display:flex;justify-content:center;align-items:center;cursor:pointer;}
+.active{background:red;}
 </style>
-
 </head>
-
 <body>
 
-<div class="container">
-  <div id="micBtn" class="mic-btn">🎤</div>
-
-  <div id="status" class="status">Tap to speak</div>
-
-  <div id="text" class="text"></div>
-  <div id="res" class="response"></div>
-</div>
+<div class="mic" id="mic">🎤</div>
 
 <script>
-let recognition = null;
-let listening = false;
+let rec;
+let listening=false;
 
-const micBtn = document.getElementById("micBtn");
+document.getElementById("mic").onclick=()=>{
 
-micBtn.addEventListener("click", toggleMic);
+ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+ if(!SpeechRecognition){ alert("Not supported"); return; }
 
-function initRecognition() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+ if(!rec){
+   rec = new SpeechRecognition();
+   rec.lang="en-US";
+   rec.onresult=(e)=>{
+     let text=e.results[0][0].transcript;
+     fetch('/send?text='+encodeURIComponent(text));
+   };
+   rec.onend=()=>{ listening=false; document.getElementById("mic").classList.remove("active"); };
+ }
 
-  if (!SpeechRecognition) {
-    alert("Speech Recognition not supported");
-    return null;
-  }
-
-  let rec = new SpeechRecognition();
-  rec.lang = "en-US";
-  rec.interimResults = false;
-  rec.continuous = false;
-
-  rec.onresult = function(event) {
-    try {
-      let text = event.results[0][0].transcript || "";
-      document.getElementById("text").innerText = text;
-
-      // ✅ FIXED (NO 404)
-      fetch('http://' + window.location.host + '/send?text=' + encodeURIComponent(text))
-      .then(res => res.text())
-      .then(data => {
-        document.getElementById("res").innerText = data;
-      })
-      .catch(() => {
-        document.getElementById("res").innerText = "Connection error";
-      });
-
-    } catch (e) {
-      document.getElementById("res").innerText = "Speech error";
-    }
-  };
-
-  rec.onerror = function() {
-    stopMic();
-    document.getElementById("status").innerText = "Mic error";
-  };
-
-  rec.onend = function() {
-    stopMic();
-  };
-
-  return rec;
-}
-
-function toggleMic() {
-
-  if (!recognition) {
-    recognition = initRecognition();
-    if (!recognition) return;
-  }
-
-  if (!listening) {
-    try {
-      recognition.start();
-      listening = true;
-      micBtn.classList.add("active");
-      document.getElementById("status").innerText = "Listening...";
-    } catch (e) {
-      document.getElementById("status").innerText = "Start error";
-    }
-  } else {
-    stopMic();
-  }
-}
-
-function stopMic() {
-  try {
-    if (recognition) recognition.stop();
-  } catch (e) {}
-
-  listening = false;
-  micBtn.classList.remove("active");
-  document.getElementById("status").innerText = "Stopped";
+ if(!listening){
+   rec.start();
+   listening=true;
+   document.getElementById("mic").classList.add("active");
+ }else{
+   rec.stop();
+ }
 }
 </script>
 
 </body>
 </html>
-
 )rawliteral";
-
 
 // ---------------- ROUTES ----------------
 
@@ -315,16 +221,18 @@ void handleData(){
  float t = dht.readTemperature();
  int lpg = analogRead(LPG_PIN);
 
+ if(isnan(t)) t = 0;
+
  String json = "{\"temp\":" + String(t) + ",\"lpg\":" + String(lpg) + "}";
  server.send(200,"application/json",json);
 }
 
-// 🔥 VOICE + SPEAKER
 void handleSend(){
  String text = server.arg("text");
  text.toLowerCase();
 
  float t = dht.readTemperature();
+ if(isnan(t)) t = 0;
 
  if(text.indexOf("temperature")>=0){
    speak("Temperature is " + String(t) + " degree");
@@ -341,7 +249,7 @@ void handleSend(){
  }
 
  else{
-   speak("Sorry I am offline");
+   speak("Command not recognized");
  }
 
  server.send(200,"text/plain","OK");
@@ -355,10 +263,23 @@ void setup(){
  pinMode(FAN_PIN,OUTPUT);
  pinMode(LIGHT_PIN,OUTPUT);
 
+ digitalWrite(FAN_PIN,LOW);
+ digitalWrite(LIGHT_PIN,LOW);
+
  dht.begin();
 
  WiFi.begin(ssid,password);
- while(WiFi.status()!=WL_CONNECTED){ delay(500); }
+
+ unsigned long start = millis();
+ while(WiFi.status()!=WL_CONNECTED){
+   delay(500);
+   yield();
+
+   // 🔥 timeout (20 sec)
+   if(millis() - start > 20000){
+     ESP.restart();
+   }
+ }
 
  server.on("/",handleRoot);
  server.on("/mic",handleMic);
@@ -370,6 +291,9 @@ void setup(){
  server.begin();
 }
 
+// ---------------- LOOP ----------------
+
 void loop(){
  server.handleClient();
+ yield();
 }
