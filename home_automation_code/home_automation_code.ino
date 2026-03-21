@@ -26,25 +26,24 @@ AudioGeneratorMP3 *mp3 = NULL;
 AudioFileSourceICYStream *file = NULL;
 AudioOutputI2S *out = NULL;
 
-// ---------------- SAFE SPEAK FUNCTION ----------------
+// ---------------- SAFE SPEAK ----------------
 void speak(String text){
 
-  if(text.length() == 0) return;
+  if(text.length()==0) return;
 
   text.replace(" ", "%20");
 
   String url = "http://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=" + text;
 
-  // cleanup previous (extra safety)
-  if(mp3){ delete mp3; mp3 = NULL; }
-  if(file){ delete file; file = NULL; }
-  if(out){ delete out; out = NULL; }
+  if(mp3){ delete mp3; mp3=NULL; }
+  if(file){ delete file; file=NULL; }
+  if(out){ delete out; out=NULL; }
 
   file = new AudioFileSourceICYStream(url.c_str());
   out = new AudioOutputI2S();
   mp3 = new AudioGeneratorMP3();
 
-  if(mp3 && file && out && mp3->begin(file, out)){
+  if(mp3 && file && out && mp3->begin(file,out)){
     unsigned long start = millis();
 
     while(mp3->isRunning()){
@@ -52,25 +51,21 @@ void speak(String text){
         mp3->stop();
         break;
       }
+      yield();
 
-      yield(); // watchdog safe
-
-      // 🔥 timeout safety (max 10 sec)
-      if(millis() - start > 10000){
+      if(millis()-start > 10000){
         mp3->stop();
         break;
       }
     }
   }
 
-  // cleanup
-  if(mp3){ delete mp3; mp3 = NULL; }
-  if(file){ delete file; file = NULL; }
-  if(out){ delete out; out = NULL; }
+  if(mp3){ delete mp3; mp3=NULL; }
+  if(file){ delete file; file=NULL; }
+  if(out){ delete out; out=NULL; }
 }
 
-// ---------------- HTML ----------------
-
+// ---------------- HOME PAGE ----------------
 String homePage = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -152,7 +147,6 @@ setInterval(updateData,2000);
 )rawliteral";
 
 // ---------------- MIC PAGE ----------------
-
 String micPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -170,6 +164,9 @@ body { margin:0; background:white; display:flex; justify-content:center; align-i
 <div class="mic" id="mic">🎤</div>
 
 <script>
+
+const API_KEY = "YOUR_GEMINI_API_KEY";
+
 let rec;
 let listening=false;
 
@@ -181,11 +178,21 @@ document.getElementById("mic").onclick=()=>{
  if(!rec){
    rec = new SpeechRecognition();
    rec.lang="en-US";
-   rec.onresult=(e)=>{
+
+   rec.onresult=async (e)=>{
      let text=e.results[0][0].transcript;
-     fetch('/send?text='+encodeURIComponent(text));
+
+     await fetch('/send?text='+encodeURIComponent(text));
+
+     let reply = await askGemini(text);
+
+     fetch('/speak?text='+encodeURIComponent(reply));
    };
-   rec.onend=()=>{ listening=false; document.getElementById("mic").classList.remove("active"); };
+
+   rec.onend=()=>{
+     listening=false;
+     document.getElementById("mic").classList.remove("active");
+   };
  }
 
  if(!listening){
@@ -195,7 +202,29 @@ document.getElementById("mic").onclick=()=>{
  }else{
    rec.stop();
  }
+};
+
+async function askGemini(text){
+ try{
+   const res = await fetch(
+     "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + API_KEY,
+     {
+       method:"POST",
+       headers:{ "Content-Type":"application/json" },
+       body: JSON.stringify({
+         contents:[{parts:[{text:text}]}]
+       })
+     }
+   );
+
+   const data = await res.json();
+   return data.candidates[0].content.parts[0].text;
+
+ }catch(e){
+   return "Error connecting to AI";
+ }
 }
+
 </script>
 
 </body>
@@ -227,31 +256,16 @@ void handleData(){
  server.send(200,"application/json",json);
 }
 
+// 🔥 Gemini text receive (optional log)
 void handleSend(){
  String text = server.arg("text");
- text.toLowerCase();
+ server.send(200,"text/plain","OK");
+}
 
- float t = dht.readTemperature();
- if(isnan(t)) t = 0;
-
- if(text.indexOf("temperature")>=0){
-   speak("Temperature is " + String(t) + " degree");
- }
-
- else if(text.indexOf("fan on")>=0){
-   digitalWrite(FAN_PIN,HIGH);
-   speak("Fan turned on");
- }
-
- else if(text.indexOf("fan off")>=0){
-   digitalWrite(FAN_PIN,LOW);
-   speak("Fan turned off");
- }
-
- else{
-   speak("Command not recognized");
- }
-
+// 🔊 Speak route
+void handleSpeak(){
+ String text = server.arg("text");
+ speak(text);
  server.send(200,"text/plain","OK");
 }
 
@@ -275,8 +289,7 @@ void setup(){
    delay(500);
    yield();
 
-   // 🔥 timeout (20 sec)
-   if(millis() - start > 20000){
+   if(millis()-start > 20000){
      ESP.restart();
    }
  }
@@ -287,6 +300,7 @@ void setup(){
  server.on("/light",handleLight);
  server.on("/data",handleData);
  server.on("/send",handleSend);
+ server.on("/speak",handleSpeak);
 
  server.begin();
 }
