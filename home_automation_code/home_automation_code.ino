@@ -2,12 +2,16 @@
 #include <ESP8266WebServer.h>
 #include <DHT.h>
 
-#define DHTPIN D4
-#define DHTTYPE DHT11
-#define LPG_PIN A0
+#include <WiFiClientSecure.h>
+#include "AudioFileSourceICYStream.h"
+#include "AudioGeneratorMP3.h"
+#include "AudioOutputI2S.h"
 
+#define DHTPIN D2
+#define DHTTYPE DHT11
 #define FAN_PIN D1
-#define LIGHT_PIN D2
+#define LIGHT_PIN D3
+#define LPG_PIN A0
 
 const char* ssid = "YOUR_WIFI";
 const char* password = "YOUR_PASSWORD";
@@ -15,10 +19,33 @@ const char* password = "YOUR_PASSWORD";
 ESP8266WebServer server(80);
 DHT dht(DHTPIN, DHTTYPE);
 
-bool fanState = false;
-bool lightState = false;
+// AUDIO
+AudioGeneratorMP3 *mp3;
+AudioFileSourceICYStream *file;
+AudioOutputI2S *out;
 
-// ---------------- HOME PAGE ----------------
+// 🔊 SPEAK FUNCTION
+void speak(String text){
+  text.replace(" ", "%20");
+
+  String url = "https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=" + text;
+
+  file = new AudioFileSourceICYStream(url.c_str());
+  out = new AudioOutputI2S();
+  mp3 = new AudioGeneratorMP3();
+
+  mp3->begin(file, out);
+
+  while(mp3->isRunning()){
+    mp3->loop();
+  }
+
+  delete mp3;
+  delete file;
+  delete out;
+}
+
+// -------- HTML HOME --------
 String homePage = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -29,7 +56,7 @@ String homePage = R"rawliteral(
 body{margin:0;font-family:Arial;background:white;}
 .navbar{background:yellow;padding:15px;display:flex;justify-content:space-between;font-weight:bold;}
 .container{display:grid;grid-template-columns:repeat(2,1fr);gap:15px;padding:15px;}
-.card{background:#f5f5f5;border-radius:15px;padding:20px;text-align:center;box-shadow:0 4px 10px rgba(0,0,0,0.1);}
+.card{background:#f5f5f5;border-radius:15px;padding:20px;text-align:center;}
 .toggle{cursor:pointer;}
 .active{background:lightgreen !important;}
 .icon{font-size:40px;}
@@ -46,21 +73,23 @@ body{margin:0;font-family:Arial;background:white;}
 
 <div class="container">
 
-<div id="fanCard" class="card toggle" onclick="toggleFan(this)">
+<div class="card toggle" onclick="toggleFan(this)">
 <div class="icon">🌀</div>Fan
 </div>
 
-<div id="lightCard" class="card toggle" onclick="toggleLight(this)">
+<div class="card toggle" onclick="toggleLight(this)">
 <div class="icon">💡</div>Light
 </div>
 
 <div class="card">
-<div class="icon">🌡️</div>Temperature
+<div class="icon">🌡️</div>
+Temperature
 <div class="value" id="temp">--</div>
 </div>
 
 <div class="card">
-<div class="icon">🔥</div>LPG
+<div class="icon">🔥</div>
+LPG
 <div class="value" id="lpg">--</div>
 </div>
 
@@ -83,7 +112,7 @@ function toggleLight(el){
 
 function updateData(){
  fetch('/data')
- .then(res=>res.json())
+ .then(r=>r.json())
  .then(d=>{
   document.getElementById("temp").innerText=d.temp+" °C";
   document.getElementById("lpg").innerText=d.lpg;
@@ -96,129 +125,54 @@ setInterval(updateData,2000);
 </html>
 )rawliteral";
 
-
-// ---------------- MIC PAGE ----------------
+// -------- MIC PAGE --------
 String micPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Assistant</title>
+<title>Voice</title>
 <style>
-body{margin:0;background:#fff;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;}
-.container{text-align:center;}
-.mic-btn{width:140px;height:140px;border-radius:50%;background:black;color:white;font-size:60px;display:flex;justify-content:center;align-items:center;cursor:pointer;}
-.mic-btn.active{background:red;box-shadow:0 0 25px red;}
-.status{margin-top:20px;color:#666;}
-.text{margin-top:15px;}
-.response{margin-top:8px;color:#007bff;}
+body{display:flex;justify-content:center;align-items:center;height:100vh;font-family:Arial;}
+.mic{width:140px;height:140px;border-radius:50%;background:black;color:white;font-size:60px;display:flex;align-items:center;justify-content:center;}
 </style>
 </head>
 
 <body>
 
-<div class="container">
-<div id="micBtn" class="mic-btn">🎤</div>
-<div id="status" class="status">Tap to speak</div>
-<div id="text" class="text"></div>
-<div id="res" class="response"></div>
-</div>
+<div class="mic" onclick="start()">🎤</div>
 
 <script>
-
-const API_KEY = "YOUR_API_KEY";   // 🔥 API KEY HERE
-
-let recognition=null;
-let listening=false;
-
-const micBtn=document.getElementById("micBtn");
-micBtn.onclick=toggleMic;
-
-function initRecognition(){
- const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
- if(!SpeechRecognition){alert("Not supported");return null;}
-
- let rec=new SpeechRecognition();
+function start(){
+ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+ let rec = new SpeechRecognition();
  rec.lang="en-US";
 
- rec.onresult=function(e){
-  let text=e.results[0][0].transcript;
-  document.getElementById("text").innerText=text;
-
-  fetch('/send?text='+encodeURIComponent(text))
-  .then(r=>r.text())
-  .then(ans=>{
-    if(ans=="AI"){
-      askGemini(text);
-    }else{
-      speak(ans);
-      document.getElementById("res").innerText=ans;
-    }
-  });
+ rec.onresult = function(e){
+   let text = e.results[0][0].transcript;
+   fetch('/send?text='+encodeURIComponent(text));
  };
 
- return rec;
+ rec.start();
 }
-
-function askGemini(q){
- fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + API_KEY,{
-  method:"POST",
-  headers:{"Content-Type":"application/json"},
-  body:JSON.stringify({
-    contents:[{parts:[{text:q}]}]
-  })
- })
- .then(r=>r.json())
- .then(d=>{
-   let ans=d.candidates[0].content.parts[0].text;
-   document.getElementById("res").innerText=ans;
-   speak(ans);
- });
-}
-
-function speak(t){
- let sp=new SpeechSynthesisUtterance(t);
- speechSynthesis.speak(sp);
-}
-
-function toggleMic(){
- if(!recognition){
-  recognition=initRecognition();
-  if(!recognition)return;
- }
- if(!listening){
-  recognition.start();
-  listening=true;
-  micBtn.classList.add("active");
-  document.getElementById("status").innerText="Listening...";
- }else{
-  recognition.stop();
-  listening=false;
-  micBtn.classList.remove("active");
- }
-}
-
 </script>
 
 </body>
 </html>
 )rawliteral";
 
-
-// ---------------- ROUTES ----------------
+// -------- ROUTES --------
 
 void handleRoot(){ server.send(200,"text/html",homePage); }
 void handleMic(){ server.send(200,"text/html",micPage); }
 
 void handleFan(){
- fanState=!fanState;
- digitalWrite(FAN_PIN, fanState);
+ digitalWrite(FAN_PIN,!digitalRead(FAN_PIN));
  server.send(200,"text/plain","OK");
 }
 
 void handleLight(){
- lightState=!lightState;
- digitalWrite(LIGHT_PIN, lightState);
+ digitalWrite(LIGHT_PIN,!digitalRead(LIGHT_PIN));
  server.send(200,"text/plain","OK");
 }
 
@@ -230,7 +184,7 @@ void handleData(){
  server.send(200,"application/json",json);
 }
 
-// 🔥 SMART AI + OFFLINE COMMAND
+// 🔥 VOICE LOGIC + SPEAKER
 void handleSend(){
  String text = server.arg("text");
  text.toLowerCase();
@@ -238,40 +192,30 @@ void handleSend(){
  float t = dht.readTemperature();
 
  if(text.indexOf("temperature")>=0){
-   server.send(200,"text/plain","The current temperature is "+String(t)+" degree Celsius");
- }
-
- else if(text.indexOf("who are you")>=0 || text.indexOf("introduce")>=0){
-   server.send(200,"text/plain","I am HAAAS Home Automation and AI Assistant. I assist you 24 hours.");
+   String ans = "Temperature is " + String(t) + " degree";
+   speak(ans);
+   server.send(200,"text/plain",ans);
  }
 
  else if(text.indexOf("fan on")>=0){
-   digitalWrite(FAN_PIN, HIGH);
-   server.send(200,"text/plain","Fan turned on");
+   digitalWrite(FAN_PIN,HIGH);
+   speak("Fan turned on");
+   server.send(200,"text/plain","Fan ON");
  }
 
  else if(text.indexOf("fan off")>=0){
-   digitalWrite(FAN_PIN, LOW);
-   server.send(200,"text/plain","Fan turned off");
- }
-
- else if(text.indexOf("light on")>=0){
-   digitalWrite(LIGHT_PIN, HIGH);
-   server.send(200,"text/plain","Light turned on");
- }
-
- else if(text.indexOf("light off")>=0){
-   digitalWrite(LIGHT_PIN, LOW);
-   server.send(200,"text/plain","Light turned off");
+   digitalWrite(FAN_PIN,LOW);
+   speak("Fan turned off");
+   server.send(200,"text/plain","Fan OFF");
  }
 
  else{
-   server.send(200,"text/plain","AI"); // Gemini fallback
+   speak("Sorry I am offline");
+   server.send(200,"text/plain","Offline");
  }
 }
 
-
-// ---------------- SETUP ----------------
+// -------- SETUP --------
 
 void setup(){
  Serial.begin(115200);
