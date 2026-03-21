@@ -132,6 +132,7 @@ setInterval(updateData,2000);
 
 // ---------------- MIC PAGE ----------------
 String micPage = R"rawliteral(
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -230,7 +231,8 @@ function initRecognition() {
       let text = event.results[0][0].transcript || "";
       document.getElementById("text").innerText = text;
 
-      fetch('/send?text=' + encodeURIComponent(text))
+      // ✅ FIXED (NO 404)
+      fetch('http://' + window.location.host + '/send?text=' + encodeURIComponent(text))
       .then(res => res.text())
       .then(data => {
         document.getElementById("res").innerText = data;
@@ -244,14 +246,13 @@ function initRecognition() {
     }
   };
 
-  // 🔥 AUTO STOP when finished
-  rec.onend = function() {
-    stopMic();
-  };
-
   rec.onerror = function() {
     stopMic();
     document.getElementById("status").innerText = "Mic error";
+  };
+
+  rec.onend = function() {
+    stopMic();
   };
 
   return rec;
