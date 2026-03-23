@@ -30,12 +30,13 @@ AudioOutputI2S *out = NULL;
 void speak(String text){
 
   if(text.length()==0) return;
+  if(WiFi.status()!=WL_CONNECTED) return;
 
   text.replace(" ", "%20");
 
   String url = "http://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=" + text;
 
-  if(mp3){ delete mp3; mp3=NULL; }
+  if(mp3){ mp3->stop(); delete mp3; mp3=NULL; }
   if(file){ delete file; file=NULL; }
   if(out){ delete out; out=NULL; }
 
@@ -43,7 +44,9 @@ void speak(String text){
   out = new AudioOutputI2S();
   mp3 = new AudioGeneratorMP3();
 
-  if(mp3 && file && out && mp3->begin(file,out)){
+  if(!mp3 || !file || !out) return;
+
+  if(mp3->begin(file,out)){
     unsigned long start = millis();
 
     while(mp3->isRunning()){
@@ -51,9 +54,10 @@ void speak(String text){
         mp3->stop();
         break;
       }
+
       yield();
 
-      if(millis()-start > 10000){
+      if(millis()-start > 8000){
         mp3->stop();
         break;
       }
@@ -218,7 +222,12 @@ async function askGemini(text){
    );
 
    const data = await res.json();
-   return data.candidates[0].content.parts[0].text;
+
+   if(data && data.candidates){
+     return data.candidates[0].content.parts[0].text;
+   }else{
+     return "No response from AI";
+   }
 
  }catch(e){
    return "Error connecting to AI";
@@ -252,21 +261,41 @@ void handleData(){
 
  if(isnan(t)) t = 0;
 
- String json = "{\"temp\":" + String(t) + ",\"lpg\":" + String(lpg) + "}";
+ String json = "{";
+ json += "\"temp\":" + String(t,1) + ",";
+ json += "\"lpg\":" + String(lpg);
+ json += "}";
+
  server.send(200,"application/json",json);
 }
 
-// 🔥 Gemini text receive (optional log)
 void handleSend(){
- String text = server.arg("text");
+ if(server.hasArg("text")){
+   String text = server.arg("text");
+   Serial.println("User: " + text);
+ }
  server.send(200,"text/plain","OK");
 }
 
-// 🔊 Speak route
 void handleSpeak(){
+ if(!server.hasArg("text")){
+   server.send(400,"text/plain","No Text");
+   return;
+ }
+
  String text = server.arg("text");
  speak(text);
+
  server.send(200,"text/plain","OK");
+}
+
+// 🔌 STATUS ROUTE
+void handleStatus(){
+ if(WiFi.status() == WL_CONNECTED){
+   server.send(200,"text/plain","OK");
+ }else{
+   server.send(200,"text/plain","FAIL");
+ }
 }
 
 // ---------------- SETUP ----------------
@@ -294,6 +323,9 @@ void setup(){
    }
  }
 
+ Serial.println("Connected!");
+ Serial.println(WiFi.localIP());
+
  server.on("/",handleRoot);
  server.on("/mic",handleMic);
  server.on("/fan",handleFan);
@@ -301,6 +333,7 @@ void setup(){
  server.on("/data",handleData);
  server.on("/send",handleSend);
  server.on("/speak",handleSpeak);
+ server.on("/status",handleStatus);
 
  server.begin();
 }
@@ -308,6 +341,22 @@ void setup(){
 // ---------------- LOOP ----------------
 
 void loop(){
+
+ // auto reconnect
+ if(WiFi.status() != WL_CONNECTED){
+   WiFi.begin(ssid,password);
+
+   unsigned long start = millis();
+   while(WiFi.status()!=WL_CONNECTED){
+     delay(500);
+     yield();
+
+     if(millis()-start > 10000){
+       break;
+     }
+   }
+ }
+
  server.handleClient();
  yield();
 }
